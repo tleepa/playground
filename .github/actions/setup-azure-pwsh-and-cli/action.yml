@@ -1,0 +1,106 @@
+name: Reusable Azure PowerShell and CLI Setup
+description: This template sets up Azure PowerShell and CLI environment for workflows.
+
+inputs:
+  azcli_extensions:
+    required: false
+    description: Comma-separated list of Azure CLI extensions to install
+  pwsh_modules:
+    required: false
+    description: Comma-separated list of PowerShell Az modules to install
+
+runs:
+  using: composite
+  steps:
+    - name: install pwsh
+      shell: bash
+      run: |
+        if ! command -v pwsh &> /dev/null; then
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https software-properties-common
+          source /etc/os-release
+          wget -q "https://packages.microsoft.com/config/ubuntu/${VERSION_ID}/packages-microsoft-prod.deb"
+          sudo dpkg -i packages-microsoft-prod.deb
+          rm packages-microsoft-prod.deb
+          sudo apt-get update
+          sudo apt-get install -y powershell
+        fi
+        pwsh --version
+
+    - name: install azure-cli
+      shell: bash
+      run: |
+        if ! command -v az &> /dev/null; then
+          source /etc/os-release
+          sudo apt-get update
+          sudo apt-get install -y apt-transport-https ca-certificates curl gnupg
+          sudo mkdir -p /etc/apt/keyrings
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc |
+            gpg --dearmor | sudo tee /etc/apt/keyrings/microsoft.gpg > /dev/null
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/microsoft.gpg] https://packages.microsoft.com/repos/azure-cli/ ${VERSION_CODENAME} main" |
+            sudo tee /etc/apt/sources.list.d/azure-cli.list
+          sudo apt-get update
+          sudo apt-get install -y azure-cli
+        fi
+        az --version
+
+    - name: install azcli extensions
+      shell: bash
+      run: |
+        ext_list=$(az extension list --query "[].name" -o tsv)
+        for extension in $(echo "${{ inputs.azcli_extensions }}" | tr "," "\n"); do
+          if ! grep -q "${extension}" <<< $ext_list; then
+            echo "Installing Azure CLI extension: $extension"
+            az extension add --name "$extension"
+          fi
+        done
+        echo "Installed Azure CLI extensions:"
+        az extension list --query "[].{name: name, version: version}" --output table
+
+    - name: install pwsh modules
+      shell: pwsh
+      run: |
+        $modules_list = "${{ inputs.pwsh_modules }}".Split(",", [StringSplitOptions]::RemoveEmptyEntries -bor [StringSplitOptions]::TrimEntries)
+
+        $ProgressPreference = "SilentlyContinue"
+        if (-not (Get-Module -ListAvailable -Name Microsoft.PowerShell.PSResourceGet -ErrorAction SilentlyContinue)) {
+          Write-Host "Installing PowerShell modules: Microsoft.PowerShell.PSResourceGet"
+          Install-Module -Name Microsoft.PowerShell.PSResourceGet -Repository PSGallery -Force
+          Import-Module -Name Microsoft.PowerShell.PSResourceGet -Force
+        }
+
+        if ($modules_list -contains "Az" -or $modules_list -match "^Az\..+") {
+          if (-not (Get-Module -ListAvailable -Name Az.Tools.Installer -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing PowerShell modules: Az.Tools.Installer"
+            Install-PSResource -Name Az.Tools.Installer -TrustRepository -Quiet
+            Import-Module -Name Az.Tools.Installer -Force
+          }
+
+          $az_modules_list = @()
+          $azDependencies = Find-PSResource -Name Az | Select-Object -ExpandProperty Dependencies | Select-Object -ExpandProperty Name
+          if ($modules_list -contains "Az") {
+            if (-not (Get-Module -ListAvailable -Name Az -ErrorAction SilentlyContinue)) {
+              Write-Host "Installing PowerShell modules: Az"
+              Install-AzModule -Force | Out-Null
+            }
+            $modules_list = $modules_list | Where-Object { $_ -ne "Az" }
+          }
+        }
+
+        $azInstalled = Get-Module -ListAvailable -Name "Az.*" | Select-Object -ExpandProperty Name | Sort-Object -Unique
+        $az_modules_list += $modules_list | Where-Object { ($_ -in $azDependencies) -and ($_ -notin $azInstalled) }
+        $modules_list = $modules_list | Where-Object { $_ -notin $azDependencies }
+        $modules_list = $modules_list | Where-Object { $_ -ne (Get-Module -ListAvailable -Name $_ | Select-Object -ExpandProperty Name) }
+
+        if ($az_modules_list) {
+          Write-Host "Installing PowerShell modules: $($az_modules_list -join ", ")"
+          Install-AzModule -Name $az_modules_list -Force | Out-Null
+        }
+
+        if ($modules_list) {
+          Write-Host "Installing PowerShell modules: $($modules_list -join ", ")"
+          Install-PSResource -Name $modules_list -TrustRepository -Quiet
+        }
+
+        Write-Host "Installed PowerShell modules:"
+        Get-Module -ListAvailable | Select-Object -Property Name, Version | Sort-Object -Property Name

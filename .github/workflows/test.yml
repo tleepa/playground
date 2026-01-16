@@ -1,0 +1,16 @@
+name: Test
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Azure PowerShell and CLI
+        uses: ./.github/actions/setup-azure-pwsh-and-cli
+        with:
+          pwsh_modules: "Az,EnterprisePolicyAsCode"
+          # pwsh_modules: "Az.Accounts,Az.PolicyInsights,Az.ResourceGraph,Az.Resources,EnterprisePolicyAsCode"
